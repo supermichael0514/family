@@ -1,0 +1,151 @@
+<!doctype html>
+<html lang="zh-CN">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>我们家的故事</title>
+    <link rel="stylesheet" href="styles.css" />
+  </head>
+  <body class="auth-locked">
+    <div class="auth-screen" data-auth-screen>
+      <form class="auth-card" data-auth-form>
+        <span class="brand-mark">家</span>
+        <div>
+          <p class="eyebrow">Private Family Site</p>
+          <h1>请输入密码</h1>
+          <p>这里保存着家人的照片和资料，需要验证后才能进入。</p>
+        </div>
+        <label>
+          <span>访问密码</span>
+          <input type="password" name="password" autocomplete="current-password" required data-auth-password />
+        </label>
+        <p class="auth-error" data-auth-error aria-live="polite"></p>
+        <button type="submit">进入网站</button>
+      </form>
+    </div>
+
+    <header class="site-header">
+      <a class="brand" href="#home" aria-label="回到首页">
+        <span class="brand-mark">家</span>
+        <span>我们家的故事</span>
+      </a>
+      <nav class="top-nav" aria-label="主导航">
+        <a href="#home">首页</a>
+        <a href="#timeline">时间线</a>
+        <a href="#album">月度相册</a>
+        <a href="#map">旅行地图</a>
+        <a href="#calendar">家庭日历</a>
+        <a href="#archive">资料库</a>
+      </nav>
+    </header>
+
+    <main>
+      <section class="view active" id="home" aria-labelledby="home-title">
+        <div class="hero">
+          <img class="hero-photo" src="assets/family/hero-family.bmp" alt="全家福封面" />
+          <div class="hero-copy">
+            <p class="eyebrow">Family Memory Site</p>
+            <h1 id="home-title">从相遇到一家人</h1>
+            <p>这里记录我们从认识、相爱、结婚，到陪孩子一起长大的日子。照片、时间线、旅行、日历和家庭资料，都放在一个长期保存的地方。</p>
+          </div>
+        </div>
+
+        <section class="home-grid" aria-label="首页摘要">
+          <article class="panel latest-month">
+            <div class="panel-heading">
+              <p class="eyebrow">Latest Month</p>
+              <h2>时间轴最新一个月</h2>
+            </div>
+            <div class="month-preview" data-latest-month></div>
+          </article>
+
+          <article class="panel reminders">
+            <div class="panel-heading">
+              <p class="eyebrow">Upcoming</p>
+              <h2>近期活动提醒</h2>
+            </div>
+            <div class="reminder-list" data-reminders></div>
+          </article>
+        </section>
+      </section>
+
+      <section class="view" id="timeline" aria-labelledby="timeline-title">
+        <div class="section-intro">
+          <p class="eyebrow">Family Timeline</p>
+          <h2 id="timeline-title">家庭时间线</h2>
+          <p>从两个人的相遇开始，到成为一家人的每个重要节点。这里是整个网站的主线索引。</p>
+        </div>
+        <div class="timeline-list" data-timeline></div>
+      </section>
+
+      <section class="view" id="album" aria-labelledby="album-title">
+        <div class="section-intro">
+          <p class="eyebrow">Monthly Five</p>
+          <h2 id="album-title">家庭时间轴相册</h2>
+          <p>每个月精选 5 张照片，不追求数量，只留下最能代表这个月的家庭瞬间。</p>
+        </div>
+        <div class="album-stack" data-album></div>
+      </section>
+
+      <section class="view" id="map" aria-labelledby="map-title">
+        <div class="section-intro">
+          <p class="eyebrow">Travel Map</p>
+          <h2 id="map-title">旅行地图</h2>
+          <p>从世界地图开始浏览，城市是最小标记单位。不同颜色记录爸爸、妈妈、夫妻同行和带孩子一起去过的地方。</p>
+        </div>
+        <div class="travel-layout">
+          <div class="maps-grid" data-map-grid>
+            <article class="map-card">
+              <div class="map-card-heading">
+                <h3>世界地图</h3>
+                <p>按国家查看，每次旅行最多显示 10 张照片。</p>
+              </div>
+              <div class="map-board" data-map-board="world"></div>
+            </article>
+            <article class="map-card">
+              <div class="map-card-heading">
+                <h3>中国地图</h3>
+                <p>按城市查看，每次旅行最多显示 10 张照片。</p>
+              </div>
+              <div class="map-board" data-map-board="china"></div>
+            </article>
+          </div>
+          <div class="place-panel" data-place-panel></div>
+        </div>
+      </section>
+
+      <section class="view" id="calendar" aria-labelledby="calendar-title">
+        <div class="calendar-shell" data-calendar-shell></div>
+      </section>
+
+      <section class="view" id="archive" aria-labelledby="archive-title">
+        <div class="section-intro">
+          <p class="eyebrow">Family Archive</p>
+          <h2 id="archive-title">家庭资料库</h2>
+          <p>这里不直接展示敏感原件，而是记录资料类型、存放位置、有效期和提醒状态。</p>
+        </div>
+        <div class="archive-dashboard" data-archive></div>
+      </section>
+    </main>
+
+    <div class="lightbox" aria-hidden="true" role="dialog" aria-label="照片查看器">
+      <button class="round-button close-button" type="button" aria-label="关闭">x</button>
+      <button class="round-button prev-button" type="button" aria-label="上一张">&lt;</button>
+      <figure>
+        <img alt="" />
+        <figcaption></figcaption>
+      </figure>
+      <button class="round-button next-button" type="button" aria-label="下一张">&gt;</button>
+    </div>
+
+    <div class="event-modal" aria-hidden="true" role="dialog" aria-modal="true">
+      <div class="event-modal-panel">
+        <button class="event-modal-close" type="button" aria-label="关闭">x</button>
+        <div data-event-modal-content></div>
+      </div>
+    </div>
+
+    <script src="data.js"></script>
+    <script src="script.js"></script>
+  </body>
+</html>
