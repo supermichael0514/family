@@ -1,13 +1,13 @@
 const AUTH_STORAGE_KEY = "family-site-authenticated";
 const CLIENT_SITE_PASSWORD = "150921";
-const data = window.familyData || null;
+let data = window.familyData || null;
 
 let gallery = [];
 let currentImageIndex = 0;
 let selectedMapPlace = null;
 let activeMapDrag = null;
 let suppressMapClick = false;
-let calendarCursor = data ? { ...data.family.currentCalendar } : { year: 2026, month: 6 };
+let calendarCursor = { year: 2026, month: 6 };
 let activePositionPickerDrag = null;
 let suppressPositionPickerClick = false;
 
@@ -86,15 +86,22 @@ function renderCreateActions() {
 }
 
 function renderLatestMonth() {
-  const month = data.monthlyAlbums.find((item) => item.id === data.family.latestMonthId) || data.monthlyAlbums.at(-1);
+  const month = data.monthlyAlbums.slice().sort((a, b) => b.id.localeCompare(a.id))[0];
+  if (!month) {
+    document.querySelector("[data-latest-month]").innerHTML = "";
+    return;
+  }
   document.querySelector("[data-latest-month]").innerHTML = month.photos
     .map((item, index) => photoButton(item, month.month, index === 0))
     .join("");
 }
 
 function renderReminders() {
+  const today = todayISO();
   document.querySelector("[data-reminders]").innerHTML = data.calendarEvents
-    .slice(0, 4)
+    .filter((item) => item.date >= today)
+    .sort((a, b) => a.date.localeCompare(b.date) || sortCalendarEvents(a, b))
+    .slice(0, 5)
     .map(
       (item) => `
         <article class="reminder-item">
@@ -106,7 +113,7 @@ function renderReminders() {
         </article>
       `,
     )
-    .join("");
+    .join("") || `<p class="empty-day">暂时没有近期事项。</p>`;
 }
 
 function renderTimeline() {
@@ -241,7 +248,7 @@ function renderPlacePanel(maps) {
     return;
   }
 
-  const photoLimit = 10;
+  const photoLimit = 12;
   const unitLabel = selectedMapPlace.type === "world" ? "国家" : "城市";
   const isChinaCountry = selectedMapPlace.type === "world" && selected.name === "中国";
   if (isChinaCountry) {
@@ -265,19 +272,20 @@ function renderPlacePanel(maps) {
           ? ""
           : `<div class="trip-stack">
               ${selected.trips
-                .map(
-                  (trip) => `
+                .map((trip) => {
+                  const photos = trip.photos.slice(0, photoLimit);
+                  return `
                     <section class="trip-group">
                       <div class="trip-heading">
                         <h4>${formatDate(trip.date)}${selectedMapPlace.type === "world" ? ` · ${trip.name}` : ""}</h4>
                         <span>${trip.kindLabel}</span>
                       </div>
-                      <div class="place-photos">
-                        ${trip.photos.slice(0, photoLimit).map((item, index) => photoButton(item, `${trip.name} ${formatDate(trip.date)}`, index === 0)).join("")}
+                      <div class="place-photos photo-count-${clamp(photos.length, 9, 12)}">
+                        ${photos.map((item, index) => photoButton(item, `${trip.name} ${formatDate(trip.date)}`, index === 0)).join("")}
                       </div>
                     </section>
-                  `,
-                )
+                  `;
+                })
                 .join("")}
             </div>`
       }
@@ -378,9 +386,18 @@ function openArchivePhotoBrowser(tab) {
 function openCreateModal(kind) {
   const modal = document.querySelector(".event-modal");
   const content = modal.querySelector("[data-event-modal-content]");
+  if (kind === "map") resetPositionPickerViews();
   content.innerHTML = createForm(kind);
   modal.classList.add("open");
   modal.setAttribute("aria-hidden", "false");
+}
+
+function resetPositionPickerViews() {
+  Object.values(positionPickerViews).forEach((view) => {
+    view.zoom = 1;
+    view.panX = 0;
+    view.panY = 0;
+  });
 }
 
 function createForm(kind) {
@@ -423,7 +440,7 @@ function createForm(kind) {
         </div>
         ${textarea("summary", "旅行说明", true)}
       `,
-      hint: "会创建 travel/YYYY-MM-地点名 文件夹，并预留 20 张照片路径。世界地图和中国地图都显示前 10 张。",
+      hint: "会创建 travel/YYYY-MM-地点名 文件夹，并预留 10 张照片路径。",
     },
     calendar: {
       title: "创建日历事件",
@@ -635,7 +652,7 @@ function toISO(date) {
 }
 
 function todayISO() {
-  return new Date().toISOString().slice(0, 10);
+  return toISO(new Date());
 }
 
 function groupByYear(items, key) {
@@ -661,7 +678,10 @@ function groupedTravelCountries() {
         trips: [],
       });
     }
-    map.get(id).trips.push(place);
+    const group = map.get(id);
+    group.kind = place.kind;
+    group.position = countryPosition(place);
+    group.trips.push(place);
     return map;
   }, new Map());
 
@@ -682,7 +702,11 @@ function groupedTravelPlaces() {
         trips: [],
       });
     }
-    map.get(id).trips.push(place);
+    const group = map.get(id);
+    group.kind = place.kind;
+    group.position = cityPosition(place);
+    group.summary = place.summary;
+    group.trips.push(place);
     return map;
   }, new Map());
   return [...groups.values()].map((group) => normalizeTravelGroup(group, false));
@@ -715,8 +739,8 @@ function normalizeTravelGroup(group, isCountryGroup) {
   const names = [...new Set(trips.map((trip) => trip.name))];
   return {
     ...group,
-    kind: latestTrip?.kind || group.kind,
-    position: isCountryGroup ? countryPosition(latestTrip) : group.position,
+    kind: group.kind || latestTrip?.kind,
+    position: group.position,
     summary: isCountryGroup ? `${names.join("、")}留下了 ${trips.length} 次旅行记录。` : group.summary,
     trips,
   };
@@ -787,18 +811,19 @@ function updatePositionPicker(button, event) {
   const form = button.closest("form");
   if (!picker || !form) return;
 
-  const rect = button.getBoundingClientRect();
-  const view = positionPickerViews[picker.dataset.positionPicker];
-  const x = clamp((((event.clientX - rect.left) - view.panX) / view.zoom / rect.width) * 100, 0, 100);
-  const y = clamp((((event.clientY - rect.top) - view.panY) / view.zoom / rect.height) * 100, 0, 100);
+  const viewport = picker.querySelector(".position-picker-viewport");
+  const rect = viewport.getBoundingClientRect();
+  const x = clamp(((event.clientX - rect.left) / rect.width) * 100, 0, 100);
+  const y = clamp(((event.clientY - rect.top) / rect.height) * 100, 0, 100);
   const roundedX = Math.round(x * 10) / 10;
   const roundedY = Math.round(y * 10) / 10;
-  setPositionPickerValue(form, picker.dataset.positionPicker, roundedX, roundedY);
+  setPositionPickerValue(form, picker.dataset.positionPicker, roundedX, roundedY, true);
 }
 
-function setPositionPickerValue(form, type, x, y) {
+function setPositionPickerValue(form, type, x, y, manual = false) {
   const picker = form.querySelector(`[data-position-picker="${type}"]`);
   if (!picker) return;
+  if (manual) picker.dataset.positionManual = "true";
   form.elements[picker.dataset.xName].value = x;
   form.elements[picker.dataset.yName].value = y;
   picker.querySelector("i").style.left = `${x}%`;
@@ -840,8 +865,10 @@ function syncExistingTravelPosition(form) {
 
   const world = existing.worldPosition || existing.position;
   const china = existing.chinaPosition || existing.position;
-  if (world) setPositionPickerValue(form, "world", Number(world.x), Number(world.y));
-  if (china) setPositionPickerValue(form, "china", Number(china.x), Number(china.y));
+  const worldPicker = form.querySelector('[data-position-picker="world"]');
+  const chinaPicker = form.querySelector('[data-position-picker="china"]');
+  if (world && worldPicker?.dataset.positionManual !== "true") setPositionPickerValue(form, "world", Number(world.x), Number(world.y));
+  if (china && chinaPicker?.dataset.positionManual !== "true") setPositionPickerValue(form, "china", Number(china.x), Number(china.y));
 }
 
 function sortCalendarEvents(a, b) {
@@ -870,19 +897,57 @@ function clamp(value, min, max) {
   return Math.max(min, Math.min(max, value));
 }
 
-function initAuthGate() {
+function setFamilyData(nextData) {
+  data = nextData;
+  window.familyData = nextData;
+  if (data?.family?.currentCalendar) calendarCursor = { ...data.family.currentCalendar };
+}
+
+async function loadFamilyData() {
+  if (data) return data;
+
+  if (location.protocol === "file:") {
+    return new Promise((resolveData, rejectData) => {
+      const script = document.createElement("script");
+      script.src = "data.js";
+      script.onload = () => {
+        if (!window.familyData) {
+          rejectData(new Error("家庭数据没有加载成功"));
+          return;
+        }
+        setFamilyData(window.familyData);
+        resolveData(data);
+      };
+      script.onerror = () => rejectData(new Error("家庭数据没有加载成功"));
+      document.head.append(script);
+    });
+  }
+
+  const source = `data.js?v=${Date.now()}`;
+  const response = await fetch(source, { cache: "no-store", credentials: "same-origin" });
+  if (!response.ok) throw new Error("家庭数据没有加载成功");
+
+  const text = await response.text();
+  const match = text.match(/window\.familyData\s*=\s*(\{[\s\S]*\})\s*;?\s*$/);
+  if (!match) throw new Error("家庭数据没有加载成功");
+
+  setFamilyData(JSON.parse(match[1]));
+  return data;
+}
+
+async function initAuthGate() {
   const form = document.querySelector("[data-auth-form]");
   const input = document.querySelector("[data-auth-password]");
   if (!form) return;
 
-  if (data && location.protocol !== "file:") {
-    unlockSite();
-    return;
-  }
-
-  if (data && location.protocol === "file:" && localStorage.getItem(AUTH_STORAGE_KEY) === "true") {
-    unlockSite();
-    return;
+  if (localStorage.getItem(AUTH_STORAGE_KEY) === "true") {
+    try {
+      await loadFamilyData();
+      unlockSite();
+      return;
+    } catch (error) {
+      localStorage.removeItem(AUTH_STORAGE_KEY);
+    }
   }
 
   document.body.classList.add("auth-locked");
@@ -892,7 +957,18 @@ function initAuthGate() {
 function unlockSite() {
   localStorage.setItem(AUTH_STORAGE_KEY, "true");
   document.body.classList.remove("auth-locked");
+  refreshImages();
   renderAll();
+}
+
+function refreshImages() {
+  document.querySelectorAll("img[src]").forEach((image) => {
+    const source = image.getAttribute("src");
+    image.removeAttribute("src");
+    window.requestAnimationFrame(() => {
+      image.setAttribute("src", source);
+    });
+  });
 }
 
 async function submitAuthForm(form) {
@@ -902,8 +978,14 @@ async function submitAuthForm(form) {
 
   if (location.protocol === "file:") {
     if (password === CLIENT_SITE_PASSWORD) {
-      unlockSite();
-      return;
+      try {
+        await loadFamilyData();
+        unlockSite();
+        return;
+      } catch (loadError) {
+        error.textContent = "数据加载失败，请确认 data.js 文件还在同一文件夹。";
+        return;
+      }
     }
     error.textContent = "密码不正确，请再试一次。";
     return;
@@ -912,15 +994,17 @@ async function submitAuthForm(form) {
   try {
     const response = await fetch("/api/login", {
       method: "POST",
+      credentials: "same-origin",
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify({ password }),
     });
-    if (!response.ok) throw new Error("login failed");
-    localStorage.setItem(AUTH_STORAGE_KEY, "true");
-    window.location.reload();
+    const result = await response.json();
+    if (!response.ok || !result.data) throw new Error(result.error || "登录失败");
+    setFamilyData(result.data);
+    unlockSite();
   } catch (error) {
     form.elements.password.select();
-    error.textContent = "密码不正确，请再试一次。";
+    error.textContent = error.message === "密码不正确" ? "密码不正确，请再试一次。" : error.message;
   }
 }
 

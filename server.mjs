@@ -4,6 +4,7 @@ import { createReadStream } from "node:fs";
 import { extname, join, normalize, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 import { randomUUID, timingSafeEqual } from "node:crypto";
+import vm from "node:vm";
 
 const root = fileURLToPath(new URL(".", import.meta.url));
 const dataFile = join(root, "data.js");
@@ -11,7 +12,8 @@ const placeholderFile = join(root, "assets/family/placeholder.bmp");
 const port = Number(process.env.PORT || 8001);
 const sitePassword = process.env.SITE_PASSWORD || "150921";
 const sessionToken = randomUUID();
-const publicPaths = new Set(["/", "/index.html", "/styles.css", "/script.js"]);
+const travelPhotoCount = 10;
+const publicPaths = new Set(["/", "/index.html", "/styles.css", "/script.js", "/assets/family/favicon.svg"]);
 
 const mimeTypes = {
   ".html": "text/html; charset=utf-8",
@@ -57,11 +59,12 @@ async function handleLogin(request, response) {
     return;
   }
 
+  const data = await readData();
   response.writeHead(200, {
     "Content-Type": "application/json; charset=utf-8",
     "Set-Cookie": `family_site_session=${sessionToken}; HttpOnly; SameSite=Lax; Path=/; Max-Age=2592000`,
   });
-  response.end(JSON.stringify({ ok: true }));
+  response.end(JSON.stringify({ ok: true, data }));
 }
 
 async function handleCreate(request, response) {
@@ -118,16 +121,12 @@ async function createAlbum(data, payload) {
 async function createTravel(data, payload) {
   requireFields(payload, ["date", "name", "country", "kind", "years", "x", "y", "summary"]);
   const folder = `assets/travel/${payload.date}-${slug(payload.name)}`;
-  await createPhotoFolder(folder, 20);
+  await createPhotoFolder(folder, travelPhotoCount);
   const kindMeta = data.travelKinds.find((item) => item.id === payload.kind) || data.travelKinds[0];
   const id = `${payload.date}-${slug(payload.name)}`;
-  const photos = makePhotos(folder, 20, payload.name);
-  const existing = data.travelPlaces
-    .slice()
-    .reverse()
-    .find((item) => item.country === payload.country && item.name === payload.name);
-  const worldPosition = existing?.worldPosition || existing?.position || { x: clamp(Number(payload.x), 0, 100), y: clamp(Number(payload.y), 0, 100) };
-  const chinaPosition = existing?.chinaPosition || existing?.position || { x: clamp(Number(payload.chinaX), 0, 100), y: clamp(Number(payload.chinaY), 0, 100) };
+  const photos = makePhotos(folder, travelPhotoCount, payload.name);
+  const worldPosition = { x: clamp(Number(payload.x), 0, 100), y: clamp(Number(payload.y), 0, 100) };
+  const chinaPosition = { x: clamp(Number(payload.chinaX), 0, 100), y: clamp(Number(payload.chinaY), 0, 100) };
   const place = {
     id,
     name: payload.name,
@@ -194,9 +193,11 @@ function makePhotos(folder, count, label) {
 
 async function readData() {
   const text = await readFile(dataFile, "utf8");
-  const match = text.match(/window\.familyData\s*=\s*(\{[\s\S]*\})\s*;?\s*$/);
-  if (!match) throw new Error("data.js 格式不正确");
-  return JSON.parse(match[1]);
+  const sandbox = { window: {} };
+  vm.createContext(sandbox);
+  vm.runInContext(text, sandbox, { filename: "data.js", timeout: 1000 });
+  if (!sandbox.window.familyData) throw new Error("data.js 格式不正确");
+  return sandbox.window.familyData;
 }
 
 async function writeData(data) {
