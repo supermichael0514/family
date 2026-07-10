@@ -691,6 +691,11 @@ function closeCreateModal() {
   modal.setAttribute("aria-hidden", "true");
 }
 
+function closeOverlays() {
+  closeLightbox();
+  closeCreateModal();
+}
+
 function showView() {
   const id = window.location.hash.slice(1) || "home";
   document.querySelectorAll(".view").forEach((view) => view.classList.toggle("active", view.id === id));
@@ -1139,7 +1144,10 @@ async function submitAuthForm(form) {
 
 initAuthGate();
 
-window.addEventListener("hashchange", showView);
+window.addEventListener("hashchange", () => {
+  closeOverlays();
+  showView();
+});
 
 document.addEventListener("click", (event) => {
   const photoTrigger = event.target.closest("[data-photo-index]");
