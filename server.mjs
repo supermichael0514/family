@@ -1,7 +1,7 @@
 import { createServer } from "node:http";
-import { readFile, writeFile, mkdir, copyFile, stat } from "node:fs/promises";
+import { readFile, writeFile, mkdir, copyFile, stat, readdir, unlink } from "node:fs/promises";
 import { createReadStream } from "node:fs";
-import { extname, join, normalize, resolve } from "node:path";
+import { extname, join, normalize, relative, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 import { randomUUID, timingSafeEqual } from "node:crypto";
 import vm from "node:vm";
@@ -9,11 +9,20 @@ import vm from "node:vm";
 const root = fileURLToPath(new URL(".", import.meta.url));
 const dataFile = join(root, "data.js");
 const placeholderFile = join(root, "assets/family/placeholder.bmp");
+const archiveRoot = join(root, "assets/archive");
 const port = Number(process.env.PORT || 8001);
 const sitePassword = process.env.SITE_PASSWORD || "150921";
 const sessionToken = randomUUID();
 const travelPhotoCount = 10;
-const publicPaths = new Set(["/", "/index.html", "/styles.css", "/script.js", "/assets/family/favicon.svg"]);
+const publicPaths = new Set([
+  "/",
+  "/index.html",
+  "/styles.css",
+  "/script.js",
+  "/assets/family/favicon.png",
+  "/assets/family/favicon.svg",
+  "/assets/family/hero-family.jpg",
+]);
 
 const mimeTypes = {
   ".html": "text/html; charset=utf-8",
@@ -26,6 +35,7 @@ const mimeTypes = {
   ".jpeg": "image/jpeg",
   ".webp": "image/webp",
   ".svg": "image/svg+xml; charset=utf-8",
+  ".pdf": "application/pdf",
   ".txt": "text/plain; charset=utf-8",
 };
 
@@ -41,6 +51,10 @@ createServer(async (request, response) => {
     }
     if (request.method === "POST" && request.url === "/api/create") {
       await handleCreate(request, response);
+      return;
+    }
+    if (request.method === "GET" && new URL(request.url, `http://${request.headers.host}`).pathname === "/api/archive-pdfs") {
+      await handleArchivePdfs(request, response);
       return;
     }
     await serveStatic(request, response);
@@ -83,18 +97,32 @@ async function handleCreate(request, response) {
   sendJson(response, 200, { data, created });
 }
 
+async function handleArchivePdfs(request, response) {
+  const url = new URL(request.url, `http://${request.headers.host}`);
+  const folder = url.searchParams.get("folder") || "";
+  const absoluteFolder = archiveFolderPath(folder);
+  const entries = await readdir(absoluteFolder, { withFileTypes: true });
+  const files = entries
+    .filter((entry) => entry.isFile() && extname(entry.name).toLowerCase() === ".pdf")
+    .map((entry) => ({
+      name: entry.name,
+      url: `${folder.replace(/\/+$/g, "")}/${encodeURIComponent(entry.name)}`,
+    }))
+    .sort((a, b) => a.name.localeCompare(b.name, "zh-CN", { numeric: true }));
+  sendJson(response, 200, { files });
+}
+
 async function createTimeline(data, payload) {
-  requireFields(payload, ["date", "title", "type", "place", "summary"]);
-  const folder = `assets/timeline/${payload.date}-${slug(payload.title)}`;
-  await createPhotoFolder(folder, 5);
+  requireFields(payload, ["date", "title", "place", "summary"]);
+  const folder = `assets/timeline/${payload.date}`;
+  await createPhotoFolder(folder, 1, { removeExtraPlaceholders: true });
   const event = {
     date: payload.date,
     title: payload.title,
-    type: payload.type,
     place: payload.place,
     summary: payload.summary,
     folder,
-    photos: makePhotos(folder, 5, payload.title),
+    photos: makePhotos(folder, 1, payload.title),
   };
   data.timelineEvents.push(event);
   return { kind: "timeline", folder, id: null };
@@ -119,10 +147,9 @@ async function createAlbum(data, payload) {
 }
 
 async function createTravel(data, payload) {
-  requireFields(payload, ["date", "name", "country", "kind", "years", "x", "y", "summary"]);
+  requireFields(payload, ["date", "name", "country", "kind", "placeSummary", "x", "y", "summary"]);
   const folder = `assets/travel/${payload.date}-${slug(payload.name)}`;
   await createPhotoFolder(folder, travelPhotoCount);
-  const kindMeta = data.travelKinds.find((item) => item.id === payload.kind) || data.travelKinds[0];
   const id = `${payload.date}-${slug(payload.name)}`;
   const photos = makePhotos(folder, travelPhotoCount, payload.name);
   const worldPosition = { x: clamp(Number(payload.x), 0, 100), y: clamp(Number(payload.y), 0, 100) };
@@ -132,12 +159,10 @@ async function createTravel(data, payload) {
     name: payload.name,
     country: payload.country,
     kind: payload.kind,
-    kindLabel: kindMeta.label,
     date: payload.date,
-    years: payload.years,
-    position: worldPosition,
     worldPosition,
     chinaPosition,
+    placeSummary: payload.placeSummary,
     summary: payload.summary,
     folder,
     cover: photos[0],
@@ -169,7 +194,7 @@ function nextId(items) {
   return items.reduce((max, item) => Math.max(max, Number(item.id) || 0), 0) + 1;
 }
 
-async function createPhotoFolder(folder, count) {
+async function createPhotoFolder(folder, count, options = {}) {
   const absoluteFolder = safePath(folder);
   await mkdir(absoluteFolder, { recursive: true });
   const readme = [
@@ -182,6 +207,21 @@ async function createPhotoFolder(folder, count) {
   for (let index = 1; index <= count; index += 1) {
     await copyFile(placeholderFile, join(absoluteFolder, `${String(index).padStart(2, "0")}.bmp`));
   }
+  if (options.removeExtraPlaceholders) await removeExtraPlaceholderFiles(absoluteFolder, count);
+}
+
+async function removeExtraPlaceholderFiles(folder, count) {
+  const placeholder = await readFile(placeholderFile);
+  const files = await readdir(folder);
+  await Promise.all(
+    files
+      .filter((file) => /^\d{2}\.bmp$/i.test(file) && Number(file.slice(0, 2)) > count)
+      .map(async (file) => {
+        const target = join(folder, file);
+        const content = await readFile(target);
+        if (Buffer.compare(content, placeholder) === 0) await unlink(target);
+      }),
+  );
 }
 
 function makePhotos(folder, count, label) {
@@ -217,6 +257,13 @@ async function serveStatic(request, response) {
 function safePath(relativePath) {
   const target = resolve(root, normalize(relativePath));
   if (!target.startsWith(root)) throw new Error("路径不允许");
+  return target;
+}
+
+function archiveFolderPath(folder) {
+  const target = safePath(folder);
+  const archiveRelativePath = relative(archiveRoot, target);
+  if (archiveRelativePath.startsWith("..") || resolve(target) === resolve(archiveRoot)) throw new Error("资料库路径不允许");
   return target;
 }
 

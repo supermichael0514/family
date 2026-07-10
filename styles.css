@@ -18,10 +18,16 @@
 }
 
 html {
+  width: 100%;
+  max-width: 100%;
+  overflow-x: hidden;
   scroll-behavior: smooth;
 }
 
 body {
+  width: 100%;
+  max-width: 100%;
+  overflow-x: hidden;
   margin: 0;
   background: var(--paper);
   color: var(--ink);
@@ -47,6 +53,7 @@ body.auth-locked .event-modal {
 
 img {
   display: block;
+  max-width: 100%;
   width: 100%;
 }
 
@@ -69,7 +76,7 @@ button {
   padding: 22px;
   background:
     linear-gradient(90deg, rgba(15, 14, 12, 0.74), rgba(15, 14, 12, 0.2)),
-    url("assets/family/hero-family.jpeg") center / cover;
+    url("assets/family/hero-family.jpg") center / cover;
 }
 
 body.auth-locked .auth-screen {
@@ -159,6 +166,22 @@ body.auth-locked .auth-screen {
   backdrop-filter: blur(16px);
 }
 
+.site-header,
+.view,
+.hero,
+.home-grid,
+.timeline-card,
+.album-month,
+.travel-layout,
+.maps-grid,
+.map-card,
+.place-panel,
+.calendar-shell,
+.archive-card,
+.event-modal-panel {
+  min-width: 0;
+}
+
 .brand {
   display: inline-flex;
   align-items: center;
@@ -229,7 +252,7 @@ main {
   border-radius: 0;
   background:
     linear-gradient(90deg, rgba(18, 17, 15, 0.83), rgba(42, 36, 30, 0.58) 48%, rgba(18, 17, 15, 0.2)),
-    url("assets/family/hero-family.jpeg") center / cover;
+    url("assets/family/hero-family.jpg") center / cover;
   box-shadow: none;
   padding: clamp(34px, 6vw, 76px) clamp(18px, 6vw, 86px);
 }
@@ -764,27 +787,41 @@ h3 {
   bottom: 14px;
   z-index: 5;
   display: flex;
-  flex-wrap: wrap;
-  gap: 8px;
-  max-width: min(620px, calc(100% - 28px));
+  align-items: flex-start;
+  flex-direction: column;
+  gap: 4px;
 }
 
 .legend-item {
+  appearance: none;
   display: inline-flex;
   align-items: center;
-  gap: 7px;
+  gap: 5px;
   border: 1px solid rgba(36, 35, 31, 0.1);
   border-radius: 999px;
   background: rgba(255, 253, 248, 0.92);
-  padding: 7px 10px;
+  padding: 4px 7px;
   color: var(--ink);
-  font-size: 13px;
+  cursor: pointer;
+  font-size: 11px;
   font-weight: 800;
+  line-height: 1.2;
+  text-align: left;
+  transition: opacity 160ms ease;
+}
+
+.legend-item.is-inactive {
+  opacity: 0.42;
+}
+
+.legend-item:focus-visible {
+  outline: 2px solid color-mix(in srgb, currentColor 45%, transparent);
+  outline-offset: 2px;
 }
 
 .legend-item i {
-  width: 11px;
-  height: 11px;
+  width: 8px;
+  height: 8px;
   border-radius: 50%;
   background: currentColor;
 }
@@ -1028,6 +1065,15 @@ h3 {
   padding: 10px 14px;
 }
 
+.trip-summary {
+  position: relative;
+  z-index: 2;
+  max-width: 760px;
+  margin: -4px 0 2px;
+  color: var(--muted);
+  line-height: 1.75;
+}
+
 .place-photos {
   position: relative;
   z-index: 1;
@@ -1241,6 +1287,7 @@ h3 {
 }
 
 .calendar-weekdays div {
+  min-width: 0;
   color: var(--muted);
   font-size: 13px;
   font-weight: 850;
@@ -1258,6 +1305,7 @@ h3 {
   display: grid;
   align-content: start;
   gap: 7px;
+  min-width: 0;
   min-height: 122px;
   border: 1px solid var(--line);
   border-radius: 8px;
@@ -1352,6 +1400,10 @@ h3 {
   padding: clamp(20px, 4vw, 30px);
 }
 
+.event-modal-panel.archive-pdf-panel {
+  width: min(1180px, 100%);
+}
+
 .event-modal-close {
   position: absolute;
   top: 12px;
@@ -1369,6 +1421,103 @@ h3 {
 .event-modal-heading {
   margin-bottom: 18px;
   padding-right: 34px;
+}
+
+.archive-pdf-browser {
+  display: grid;
+  min-height: min(760px, calc(100vh - 110px));
+}
+
+.archive-pdf-layout {
+  display: grid;
+  grid-template-columns: minmax(180px, 260px) minmax(0, 1fr);
+  gap: 14px;
+  min-height: 0;
+}
+
+.archive-pdf-list {
+  display: grid;
+  align-content: start;
+  gap: 8px;
+  max-height: min(650px, calc(100vh - 210px));
+  overflow: auto;
+  padding-right: 4px;
+}
+
+.archive-pdf-file {
+  display: grid;
+  gap: 4px;
+  width: 100%;
+  border: 1px solid var(--line);
+  border-radius: 8px;
+  background: #fbf6ed;
+  cursor: pointer;
+  padding: 12px;
+  text-align: left;
+}
+
+.archive-pdf-file.active,
+.archive-pdf-file:hover {
+  border-color: rgba(184, 121, 91, 0.58);
+  background: #fffaf1;
+}
+
+.archive-pdf-file strong {
+  color: var(--ink);
+  font-size: 14px;
+  line-height: 1.35;
+  overflow-wrap: anywhere;
+}
+
+.archive-pdf-file span {
+  color: var(--muted);
+  font-size: 12px;
+  font-weight: 780;
+}
+
+.archive-pdf-viewer {
+  display: grid;
+  grid-template-rows: auto minmax(420px, 1fr);
+  min-width: 0;
+  min-height: 0;
+  overflow: hidden;
+  border: 1px solid var(--line);
+  border-radius: 8px;
+  background: #fffaf1;
+}
+
+.archive-pdf-toolbar {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  border-bottom: 1px solid var(--line);
+  padding: 10px 12px;
+}
+
+.archive-pdf-toolbar strong {
+  min-width: 0;
+  overflow: hidden;
+  color: var(--ink);
+  font-size: 14px;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.archive-pdf-toolbar a {
+  flex: 0 0 auto;
+  color: var(--clay);
+  font-size: 13px;
+  font-weight: 800;
+  text-decoration: none;
+}
+
+.archive-pdf-viewer iframe {
+  width: 100%;
+  height: 100%;
+  min-height: 420px;
+  border: 0;
+  background: white;
 }
 
 .event-detail-list,
@@ -1671,6 +1820,31 @@ h3 {
 }
 
 @media (max-width: 680px) {
+  .site-header {
+    gap: 12px;
+    padding: 12px 14px;
+  }
+
+  .brand {
+    max-width: 100%;
+  }
+
+  .brand span:last-child {
+    min-width: 0;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+  }
+
+  .top-nav {
+    flex-wrap: wrap;
+    overflow: visible;
+  }
+
+  .top-nav a {
+    padding: 8px 10px;
+  }
+
   .view {
     padding-inline: 14px;
   }
@@ -1752,6 +1926,40 @@ h3 {
     text-align: left;
   }
 
+  .map-toolbar {
+    top: 10px;
+    right: 10px;
+    grid-template-columns: 34px 50px 34px;
+  }
+
+  .map-toolbar button {
+    width: 34px;
+    height: 34px;
+  }
+
+  .map-toolbar span {
+    font-size: 12px;
+  }
+
+  .map-legend {
+    bottom: 10px;
+    left: 10px;
+    gap: 4px;
+  }
+
+  .legend-item {
+    padding: 4px 6px;
+    font-size: 10px;
+  }
+
+  .place-panel-heading {
+    flex-direction: column;
+  }
+
+  .place-tag {
+    align-self: flex-start;
+  }
+
   .place-photos,
   .place-photos.photo-count-9,
   .place-photos.photo-count-10,
@@ -1796,6 +2004,51 @@ h3 {
   .day-more {
     font-size: 11px;
     padding: 4px 5px;
+  }
+
+  .event-modal {
+    padding: 10px;
+  }
+
+  .event-modal-panel {
+    width: 100%;
+    max-height: calc(100dvh - 20px);
+    padding: 18px 14px;
+  }
+
+  .archive-pdf-browser {
+    min-height: calc(100dvh - 56px);
+  }
+
+  .archive-pdf-layout {
+    grid-template-columns: 1fr;
+  }
+
+  .archive-pdf-list {
+    grid-auto-flow: column;
+    grid-auto-columns: minmax(150px, 70%);
+    max-height: none;
+    overflow-x: auto;
+    overflow-y: hidden;
+    padding-right: 0;
+    padding-bottom: 4px;
+  }
+
+  .archive-pdf-viewer {
+    grid-template-rows: auto minmax(360px, 1fr);
+  }
+
+  .archive-pdf-viewer iframe {
+    min-height: 360px;
+  }
+
+  .create-form {
+    padding-right: 0;
+  }
+
+  .event-detail-item {
+    align-items: flex-start;
+    flex-direction: column;
   }
 
   .prev-button,

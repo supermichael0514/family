@@ -10,6 +10,10 @@ let suppressMapClick = false;
 let calendarCursor = { year: 2026, month: 6 };
 let activePositionPickerDrag = null;
 let suppressPositionPickerClick = false;
+let selectedTravelKinds = new Set();
+let travelKindFiltersReady = false;
+let activeArchivePdfs = [];
+let activeArchivePdfIndex = 0;
 
 const mapViews = {
   world: { zoom: 1, panX: 0, panY: 0 },
@@ -28,9 +32,9 @@ const archiveCards = [
     title: "证件与纪念资料",
     note: "家庭成员证件、纪念文件和重要影像资料集中查看。",
     tabs: [
-      { id: "cao-weiyu", label: "曹维雨", type: "photos", folder: "assets/archive/cao-weiyu" },
-      { id: "tan-xingxin", label: "谭幸欣", type: "photos", folder: "assets/archive/tan-xingxin" },
-      { id: "peien-muen", label: "沛恩沐恩", type: "photos", folder: "assets/archive/peien-muen" },
+      { id: "cao-weiyu", label: "曹维雨", type: "pdfs", folder: "assets/archive/cao-weiyu" },
+      { id: "tan-xingxin", label: "谭幸欣", type: "pdfs", folder: "assets/archive/tan-xingxin" },
+      { id: "peien-muen", label: "沛恩沐恩", type: "pdfs", folder: "assets/archive/peien-muen" },
     ],
   },
   {
@@ -38,9 +42,9 @@ const archiveCards = [
     title: "健康记录",
     note: "健康资料、计划和关键信息分开保存，便于日常查找。",
     tabs: [
-      { id: "health-data", label: "健康资料", type: "photos", folder: "assets/archive/health-data" },
-      { id: "health-plan", label: "健康计划", type: "photos", folder: "assets/archive/health-plan" },
-      { id: "health-info", label: "健康信息", type: "photos", folder: "assets/archive/health-info" },
+      { id: "health-data", label: "健康资料", type: "pdfs", folder: "assets/archive/health-data" },
+      { id: "health-plan", label: "健康计划", type: "pdfs", folder: "assets/archive/health-plan" },
+      { id: "health-info", label: "健康信息", type: "pdfs", folder: "assets/archive/health-info" },
     ],
   },
   {
@@ -48,9 +52,9 @@ const archiveCards = [
     title: "家庭资产",
     note: "财务、固定资产和保险资料各自归档，方便定期复盘。",
     tabs: [
-      { id: "monthly-finance", label: "月度财报", type: "photos", folder: "assets/archive/monthly-finance" },
-      { id: "fixed-assets", label: "固定资产", type: "photos", folder: "assets/archive/fixed-assets" },
-      { id: "insurance", label: "保险资料", type: "photos", folder: "assets/archive/insurance" },
+      { id: "monthly-finance", label: "月度财报", type: "pdfs", folder: "assets/archive/monthly-finance" },
+      { id: "fixed-assets", label: "固定资产", type: "pdfs", folder: "assets/archive/fixed-assets" },
+      { id: "insurance", label: "保险资料", type: "pdfs", folder: "assets/archive/insurance" },
     ],
   },
 ];
@@ -196,6 +200,7 @@ function renderAlbums() {
 }
 
 function renderMap() {
+  ensureTravelKindFilters();
   const maps = {
     world: groupedTravelCountries(),
     china: groupedTravelPlaces(),
@@ -222,7 +227,7 @@ function renderMapBoard(type, places, mapSvg) {
               <span class="pin-head" aria-hidden="true"></span>
               <span class="pin-label">
                 <strong>${place.name}</strong>
-                <small>${type === "world" && place.name === "中国" ? "详见中国地图" : place.trips.map((trip) => `${formatDate(trip.date)} · ${trip.kindLabel}`).join(" / ")}</small>
+                <small>${type === "world" && place.name === "中国" ? "详见中国地图" : place.trips.map((trip) => `${formatDate(trip.date)} · ${travelKindLabel(trip.kind, trip.kindLabel)}`).join(" / ")}</small>
               </span>
             </button>
           `,
@@ -234,8 +239,15 @@ function renderMapBoard(type, places, mapSvg) {
       <span>${Math.round(view.zoom * 100)}%</span>
       <button type="button" data-map-zoom-in="${type}" aria-label="放大地图">+</button>
     </div>
-    <div class="map-legend">
-      ${data.travelKinds.map((kind) => `<span class="legend-item legend-${kind.id}"><i></i>${kind.label}</span>`).join("")}
+    <div class="map-legend" aria-label="筛选旅行类型">
+      ${data.travelKinds
+        .map((kind) => {
+          const active = selectedTravelKinds.has(kind.id);
+          return `<button class="legend-item legend-${kind.id} ${active ? "" : "is-inactive"}" type="button" data-travel-kind-filter="${kind.id}" aria-pressed="${active}">
+            <i aria-hidden="true"></i>${kind.label}
+          </button>`;
+        })
+        .join("")}
     </div>
   `;
 }
@@ -278,8 +290,9 @@ function renderPlacePanel(maps) {
                     <section class="trip-group">
                       <div class="trip-heading">
                         <h4>${formatDate(trip.date)}${selectedMapPlace.type === "world" ? ` · ${trip.name}` : ""}</h4>
-                        <span>${trip.kindLabel}</span>
+                        <span>${travelKindLabel(trip.kind, trip.kindLabel)}</span>
                       </div>
+                      <p class="trip-summary">${trip.summary}</p>
                       <div class="place-photos photo-count-${clamp(photos.length, 9, 12)}">
                         ${photos.map((item, index) => photoButton(item, `${trip.name} ${formatDate(trip.date)}`, index === 0)).join("")}
                       </div>
@@ -354,7 +367,7 @@ function renderArchive() {
               (tab) => `
                 <button class="archive-tab" type="button" data-archive-card="${group.id}" data-archive-tab="${tab.id}">
                   <strong>${tab.label}</strong>
-                  <span>照片浏览</span>
+                  <span>PDF浏览</span>
                 </button>
               `,
             )
@@ -370,21 +383,101 @@ function openArchiveItem(cardId, tabId) {
   const card = archiveCards.find((item) => item.id === cardId);
   const tab = card?.tabs.find((item) => item.id === tabId);
   if (!card || !tab) return;
-  openArchivePhotoBrowser(tab);
+  openArchivePdfBrowser(tab);
 }
 
-function openArchivePhotoBrowser(tab) {
-  const photos = Array.from({ length: 5 }, (_, index) => {
-    const number = String(index + 1).padStart(2, "0");
-    return { src: `${tab.folder}/${number}.bmp`, caption: tab.label };
+async function openArchivePdfBrowser(tab) {
+  const modal = document.querySelector(".event-modal");
+  const content = modal.querySelector("[data-event-modal-content]");
+  modal.querySelector(".event-modal-panel").classList.add("archive-pdf-panel");
+  activeArchivePdfs = [];
+  activeArchivePdfIndex = 0;
+  content.innerHTML = archivePdfShell(tab, `<p class="empty-day">正在读取 PDF...</p>`);
+  modal.classList.add("open");
+  modal.setAttribute("aria-hidden", "false");
+
+  if (location.protocol === "file:") {
+    content.innerHTML = archivePdfShell(tab, `<p class="empty-day">请使用本地服务打开网页后查看文件夹内的 PDF。</p>`);
+    return;
+  }
+
+  try {
+    const response = await fetch(`/api/archive-pdfs?folder=${encodeURIComponent(tab.folder)}`, { credentials: "same-origin" });
+    const result = await response.json();
+    if (!response.ok) throw new Error(result.error || "PDF读取失败");
+    renderArchivePdfBrowser(tab, result.files || []);
+  } catch (error) {
+    content.innerHTML = archivePdfShell(tab, `<p class="empty-day">PDF读取失败：${escapeHtml(error.message)}</p>`);
+  }
+}
+
+function archivePdfShell(tab, body) {
+  return `
+    <div class="archive-pdf-browser">
+      <div class="event-modal-heading">
+        <p class="eyebrow">Family Archive</p>
+        <h3>${escapeHtml(tab.label)}</h3>
+      </div>
+      ${body}
+    </div>
+  `;
+}
+
+function renderArchivePdfBrowser(tab, files) {
+  const content = document.querySelector("[data-event-modal-content]");
+  activeArchivePdfs = files;
+  if (!files.length) {
+    content.innerHTML = archivePdfShell(tab, `<p class="empty-day">这个文件夹里还没有 PDF。</p>`);
+    return;
+  }
+
+  content.innerHTML = archivePdfShell(
+    tab,
+    `
+      <div class="archive-pdf-layout">
+        <div class="archive-pdf-list" aria-label="${escapeAttr(tab.label)} PDF列表">
+          ${files
+            .map(
+              (file, index) => `
+                <button class="archive-pdf-file" type="button" data-archive-pdf-index="${index}">
+                  <strong>${escapeHtml(file.name.replace(/\.pdf$/i, ""))}</strong>
+                  <span>PDF</span>
+                </button>
+              `,
+            )
+            .join("")}
+        </div>
+        <div class="archive-pdf-viewer">
+          <div class="archive-pdf-toolbar">
+            <strong data-archive-pdf-title></strong>
+            <a href="#" target="_blank" rel="noopener" data-archive-pdf-open>打开 PDF</a>
+          </div>
+          <iframe title="${escapeAttr(tab.label)} PDF预览" data-archive-pdf-frame></iframe>
+        </div>
+      </div>
+    `,
+  );
+  selectArchivePdf(0);
+}
+
+function selectArchivePdf(index) {
+  const file = activeArchivePdfs[index];
+  if (!file) return;
+  activeArchivePdfIndex = index;
+  document.querySelectorAll("[data-archive-pdf-index]").forEach((button) => {
+    button.classList.toggle("active", Number(button.dataset.archivePdfIndex) === index);
   });
-  const startIndex = gallery.length;
-  photos.forEach((photo) => addGalleryItem(photo, tab.label));
-  openLightbox(startIndex);
+  const frame = document.querySelector("[data-archive-pdf-frame]");
+  const title = document.querySelector("[data-archive-pdf-title]");
+  const openLink = document.querySelector("[data-archive-pdf-open]");
+  if (frame) frame.src = file.url;
+  if (title) title.textContent = file.name;
+  if (openLink) openLink.href = file.url;
 }
 
 function openCreateModal(kind) {
   const modal = document.querySelector(".event-modal");
+  modal.querySelector(".event-modal-panel").classList.remove("archive-pdf-panel");
   const content = modal.querySelector("[data-event-modal-content]");
   if (kind === "map") resetPositionPickerViews();
   content.innerHTML = createForm(kind);
@@ -407,11 +500,10 @@ function createForm(kind) {
       fields: `
         ${input("date", "日期", "date", todayISO(), true)}
         ${input("title", "事件标题", "text", "", true)}
-        ${input("type", "类型", "text", "夫妻 / 婚礼 / 孩子 / 旅行", true)}
         ${input("place", "地点", "text", "", true)}
         ${textarea("summary", "事件说明", true)}
       `,
-      hint: "会创建 timeline/YYYY-MM-DD-事件名 文件夹，并预留 5 张照片路径。",
+      hint: "会创建 timeline/YYYY-MM-DD 文件夹，并预留 1 张照片路径。",
     },
     album: {
       title: "创建月度相册",
@@ -429,7 +521,7 @@ function createForm(kind) {
         ${input("name", "地点名称", "text", "", true)}
         ${input("country", "国家 / 地区", "text", "中国", true)}
         ${select("kind", "旅行类型", data.travelKinds)}
-        ${input("years", "显示年份", "text", String(new Date().getFullYear()), true)}
+        ${textarea("placeSummary", "地点汇总", true)}
         <input name="x" type="hidden" value="76" />
         <input name="y" type="hidden" value="43" />
         <input name="chinaX" type="hidden" value="50" />
@@ -438,7 +530,7 @@ function createForm(kind) {
           ${positionPicker("world", "世界地图位置", "用于世界地图上的国家图钉。点击地图取点。")}
           ${positionPicker("china", "中国地图位置", "国家 / 地区为中国时使用。点击地图取点。")}
         </div>
-        ${textarea("summary", "旅行说明", true)}
+        ${textarea("summary", "本次旅行说明", true)}
       `,
       hint: "会创建 travel/YYYY-MM-地点名 文件夹，并预留 10 张照片路径。",
     },
@@ -562,6 +654,7 @@ async function submitCreateForm(form) {
 
 function openDayModal(date) {
   const modal = document.querySelector(".event-modal");
+  modal.querySelector(".event-modal-panel").classList.remove("archive-pdf-panel");
   const content = modal.querySelector("[data-event-modal-content]");
   const events = data.calendarEvents.filter((item) => item.date === date).sort(sortCalendarEvents);
   content.innerHTML = `
@@ -593,6 +686,7 @@ function openDayModal(date) {
 
 function closeCreateModal() {
   const modal = document.querySelector(".event-modal");
+  modal.querySelector(".event-modal-panel").classList.remove("archive-pdf-panel");
   modal.classList.remove("open");
   modal.setAttribute("aria-hidden", "true");
 }
@@ -665,7 +759,7 @@ function groupByYear(items, key) {
 }
 
 function groupedTravelCountries() {
-  const groups = data.travelPlaces.reduce((map, place) => {
+  const groups = visibleTravelPlaces().reduce((map, place) => {
     const id = place.country;
     if (!map.has(id)) {
       map.set(id, {
@@ -674,13 +768,14 @@ function groupedTravelCountries() {
         country: place.country,
         kind: place.kind,
         position: countryPosition(place),
-        summary: "",
+        summary: place.placeSummary || place.summary,
         trips: [],
       });
     }
     const group = map.get(id);
     group.kind = place.kind;
     group.position = countryPosition(place);
+    group.summary = place.placeSummary || place.summary;
     group.trips.push(place);
     return map;
   }, new Map());
@@ -689,7 +784,7 @@ function groupedTravelCountries() {
 }
 
 function groupedTravelPlaces() {
-  const groups = data.travelPlaces.filter((place) => place.country === "中国").reduce((map, place) => {
+  const groups = visibleTravelPlaces().filter((place) => place.country === "中国").reduce((map, place) => {
     const id = placeKey(place);
     if (!map.has(id)) {
       map.set(id, {
@@ -698,14 +793,14 @@ function groupedTravelPlaces() {
         country: place.country,
         kind: place.kind,
         position: cityPosition(place),
-        summary: place.summary,
+        summary: place.placeSummary || place.summary,
         trips: [],
       });
     }
     const group = map.get(id);
     group.kind = place.kind;
     group.position = cityPosition(place);
-    group.summary = place.summary;
+    group.summary = place.placeSummary || place.summary;
     group.trips.push(place);
     return map;
   }, new Map());
@@ -741,9 +836,39 @@ function normalizeTravelGroup(group, isCountryGroup) {
     ...group,
     kind: group.kind || latestTrip?.kind,
     position: group.position,
-    summary: isCountryGroup ? `${names.join("、")}留下了 ${trips.length} 次旅行记录。` : group.summary,
+    summary: group.summary || (isCountryGroup ? `${names.join("、")}留下了 ${trips.length} 次旅行记录。` : ""),
     trips,
   };
+}
+
+function travelKindLabel(kindId, fallback = "") {
+  return data.travelKinds.find((kind) => kind.id === kindId)?.label || fallback || kindId || "旅行";
+}
+
+function ensureTravelKindFilters() {
+  if (!data?.travelKinds) return;
+  const validKinds = new Set(data.travelKinds.map((kind) => kind.id));
+  if (!travelKindFiltersReady) {
+    selectedTravelKinds = new Set(validKinds);
+    travelKindFiltersReady = true;
+    return;
+  }
+  selectedTravelKinds = new Set([...selectedTravelKinds].filter((kindId) => validKinds.has(kindId)));
+}
+
+function visibleTravelPlaces() {
+  ensureTravelKindFilters();
+  return data.travelPlaces.filter((place) => selectedTravelKinds.has(place.kind));
+}
+
+function toggleTravelKindFilter(kindId) {
+  ensureTravelKindFilters();
+  if (selectedTravelKinds.has(kindId)) {
+    selectedTravelKinds.delete(kindId);
+  } else {
+    selectedTravelKinds.add(kindId);
+  }
+  renderMap();
 }
 
 function placeKey(place) {
@@ -893,6 +1018,10 @@ function escapeAttr(value) {
   return String(value).replaceAll("&", "&amp;").replaceAll('"', "&quot;").replaceAll("<", "&lt;");
 }
 
+function escapeHtml(value) {
+  return String(value).replaceAll("&", "&amp;").replaceAll("<", "&lt;").replaceAll(">", "&gt;");
+}
+
 function clamp(value, min, max) {
   return Math.max(min, Math.min(max, value));
 }
@@ -1026,6 +1155,12 @@ document.addEventListener("click", (event) => {
     yearToggle.setAttribute("aria-expanded", String(!section.classList.contains("collapsed")));
   }
 
+  const travelKindFilter = event.target.closest("[data-travel-kind-filter]");
+  if (travelKindFilter) {
+    toggleTravelKindFilter(travelKindFilter.dataset.travelKindFilter);
+    return;
+  }
+
   const place = event.target.closest("[data-place]");
   if (place) {
     selectedMapPlace = { type: place.dataset.mapType, id: place.dataset.place };
@@ -1039,7 +1174,7 @@ document.addEventListener("click", (event) => {
   if (zoomIn) zoomMap(zoomIn.dataset.mapZoomIn, 0.2);
 
   const mapBoard = event.target.closest("[data-map-board]");
-  if (mapBoard && !place && !event.target.closest(".map-toolbar") && !suppressMapClick) {
+  if (mapBoard && !place && !event.target.closest(".map-toolbar") && !event.target.closest(".map-legend") && !suppressMapClick) {
     selectedMapPlace = null;
     renderMap();
   }
@@ -1065,6 +1200,9 @@ document.addEventListener("click", (event) => {
 
   const archiveTab = event.target.closest("[data-archive-tab]");
   if (archiveTab) openArchiveItem(archiveTab.dataset.archiveCard, archiveTab.dataset.archiveTab);
+
+  const archivePdf = event.target.closest("[data-archive-pdf-index]");
+  if (archivePdf) selectArchivePdf(Number(archivePdf.dataset.archivePdfIndex));
 
   if (event.target.closest("[data-calendar-prev]")) moveCalendar(-1);
   if (event.target.closest("[data-calendar-next]")) moveCalendar(1);
@@ -1119,7 +1257,7 @@ document.addEventListener("pointerdown", (event) => {
   }
 
   const board = event.target.closest("[data-map-board]");
-  if (!board || event.target.closest("[data-place]") || event.target.closest(".map-toolbar")) return;
+  if (!board || event.target.closest("[data-place]") || event.target.closest(".map-toolbar") || event.target.closest(".map-legend")) return;
 
   const type = board.dataset.mapBoard;
   const view = mapViews[type];
