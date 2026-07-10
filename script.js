@@ -402,12 +402,33 @@ async function openArchivePdfBrowser(tab) {
   }
 
   try {
-    const response = await fetch(`/api/archive-pdfs?folder=${encodeURIComponent(tab.folder)}`, { credentials: "same-origin" });
-    const result = await response.json();
-    if (!response.ok) throw new Error(result.error || "PDF读取失败");
-    renderArchivePdfBrowser(tab, result.files || []);
+    renderArchivePdfBrowser(tab, await loadArchivePdfs(tab));
   } catch (error) {
     content.innerHTML = archivePdfShell(tab, `<p class="empty-day">PDF读取失败：${escapeHtml(error.message)}</p>`);
+  }
+}
+
+async function loadArchivePdfs(tab) {
+  const folderUrl = `${tab.folder.replace(/\/+$/g, "")}/`;
+  const response = await fetch(folderUrl, { cache: "no-store", credentials: "same-origin" });
+  if (!response.ok) throw new Error("服务器没有开启这个文件夹的目录读取");
+
+  const html = await response.text();
+  return Array.from(new DOMParser().parseFromString(html, "text/html").querySelectorAll("a[href]"))
+    .map((link) => pdfFileFromDirectoryLink(link.getAttribute("href"), folderUrl))
+    .filter(Boolean)
+    .sort((a, b) => a.name.localeCompare(b.name, "zh-CN", { numeric: true }));
+}
+
+function pdfFileFromDirectoryLink(href, folderUrl) {
+  try {
+    const url = new URL(href, new URL(folderUrl, location.href));
+    if (url.origin !== location.origin || !url.pathname.toLowerCase().endsWith(".pdf")) return null;
+    const name = decodeURIComponent(url.pathname.split("/").pop() || "");
+    if (!name) return null;
+    return { name, url: `${folderUrl}${encodeURIComponent(name)}` };
+  } catch {
+    return null;
   }
 }
 

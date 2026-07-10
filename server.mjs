@@ -1,7 +1,7 @@
 import { createServer } from "node:http";
 import { readFile, writeFile, mkdir, copyFile, stat, readdir, unlink } from "node:fs/promises";
 import { createReadStream } from "node:fs";
-import { extname, join, normalize, relative, resolve } from "node:path";
+import { extname, join, normalize, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 import { randomUUID, timingSafeEqual } from "node:crypto";
 import vm from "node:vm";
@@ -53,10 +53,6 @@ createServer(async (request, response) => {
       await handleCreate(request, response);
       return;
     }
-    if (request.method === "GET" && new URL(request.url, `http://${request.headers.host}`).pathname === "/api/archive-pdfs") {
-      await handleArchivePdfs(request, response);
-      return;
-    }
     await serveStatic(request, response);
   } catch (error) {
     sendJson(response, 500, { error: error.message });
@@ -95,21 +91,6 @@ async function handleCreate(request, response) {
 
   await writeData(data);
   sendJson(response, 200, { data, created });
-}
-
-async function handleArchivePdfs(request, response) {
-  const url = new URL(request.url, `http://${request.headers.host}`);
-  const folder = url.searchParams.get("folder") || "";
-  const absoluteFolder = archiveFolderPath(folder);
-  const entries = await readdir(absoluteFolder, { withFileTypes: true });
-  const files = entries
-    .filter((entry) => entry.isFile() && extname(entry.name).toLowerCase() === ".pdf")
-    .map((entry) => ({
-      name: entry.name,
-      url: `${folder.replace(/\/+$/g, "")}/${encodeURIComponent(entry.name)}`,
-    }))
-    .sort((a, b) => a.name.localeCompare(b.name, "zh-CN", { numeric: true }));
-  sendJson(response, 200, { files });
 }
 
 async function createTimeline(data, payload) {
@@ -249,9 +230,24 @@ async function serveStatic(request, response) {
   const pathname = decodeURIComponent(url.pathname === "/" ? "/index.html" : url.pathname);
   const filePath = safePath(pathname.slice(1));
   const fileStat = await stat(filePath);
+  if (fileStat.isDirectory() && isArchivePath(filePath)) {
+    await serveArchiveDirectory(filePath, pathname, response);
+    return;
+  }
   if (!fileStat.isFile()) throw new Error("不是文件");
   response.writeHead(200, { "Content-Type": mimeTypes[extname(filePath).toLowerCase()] || "application/octet-stream" });
   createReadStream(filePath).pipe(response);
+}
+
+async function serveArchiveDirectory(folder, pathname, response) {
+  const files = (await readdir(folder, { withFileTypes: true }))
+    .filter((entry) => entry.isFile() && extname(entry.name).toLowerCase() === ".pdf")
+    .map((entry) => entry.name)
+    .sort((a, b) => a.localeCompare(b, "zh-CN", { numeric: true }));
+  const basePath = pathname.endsWith("/") ? pathname : `${pathname}/`;
+  const links = files.map((file) => `<li><a href="${basePath}${encodeURIComponent(file)}">${escapeHtml(file)}</a></li>`).join("");
+  response.writeHead(200, { "Content-Type": "text/html; charset=utf-8" });
+  response.end(`<!doctype html><meta charset="utf-8"><title>PDF List</title><ul>${links}</ul>`);
 }
 
 function safePath(relativePath) {
@@ -260,11 +256,12 @@ function safePath(relativePath) {
   return target;
 }
 
-function archiveFolderPath(folder) {
-  const target = safePath(folder);
-  const archiveRelativePath = relative(archiveRoot, target);
-  if (archiveRelativePath.startsWith("..") || resolve(target) === resolve(archiveRoot)) throw new Error("资料库路径不允许");
-  return target;
+function isArchivePath(target) {
+  return target === archiveRoot || target.startsWith(`${archiveRoot}/`);
+}
+
+function escapeHtml(value) {
+  return String(value).replaceAll("&", "&amp;").replaceAll("<", "&lt;").replaceAll(">", "&gt;").replaceAll('"', "&quot;");
 }
 
 function isPublicRequest(request) {
