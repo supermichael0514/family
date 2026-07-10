@@ -3,7 +3,7 @@ import { readFile, writeFile, mkdir, copyFile, stat, readdir, unlink } from "nod
 import { createReadStream } from "node:fs";
 import { extname, join, normalize, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
-import { randomUUID, timingSafeEqual } from "node:crypto";
+import { createPublicKey, createVerify, randomUUID, timingSafeEqual } from "node:crypto";
 import vm from "node:vm";
 
 const root = fileURLToPath(new URL(".", import.meta.url));
@@ -21,6 +21,15 @@ const trustProxy = process.env.TRUST_PROXY === "true";
 const maxLoginAttempts = Number(process.env.LOGIN_MAX_ATTEMPTS || 5);
 const loginWindowMs = Number(process.env.LOGIN_WINDOW_MS || 15 * 60 * 1000);
 const loginBlockMs = Number(process.env.LOGIN_BLOCK_MS || 15 * 60 * 1000);
+const cloudflareAccessRequired = process.env.CLOUDFLARE_ACCESS_REQUIRED === "true";
+const cloudflareAccessIssuer = normalizeCloudflareAccessIssuer(
+  process.env.CLOUDFLARE_ACCESS_ISSUER || process.env.CLOUDFLARE_ACCESS_TEAM_DOMAIN,
+);
+const cloudflareAccessAudiences = String(process.env.CLOUDFLARE_ACCESS_AUD || "")
+  .split(",")
+  .map((audience) => audience.trim())
+  .filter(Boolean);
+let cloudflareAccessKeyCache = { keys: new Map(), expiresAt: 0 };
 const ROLE_ADMIN = "admin";
 const ROLE_VIEWER = "viewer";
 const sessions = new Map();
@@ -56,6 +65,11 @@ if (adminPassword === viewerPassword) {
   process.exit(1);
 }
 
+if (cloudflareAccessRequired && (!cloudflareAccessIssuer || !cloudflareAccessAudiences.length)) {
+  console.error("开启 Cloudflare Access 时，请设置 CLOUDFLARE_ACCESS_TEAM_DOMAIN 和 CLOUDFLARE_ACCESS_AUD。");
+  process.exit(1);
+}
+
 const mimeTypes = {
   ".html": "text/html; charset=utf-8",
   ".css": "text/css; charset=utf-8",
@@ -73,6 +87,13 @@ const mimeTypes = {
 
 createServer(async (request, response) => {
   try {
+    const cloudflareAccess = await verifyCloudflareAccessRequest(request);
+    if (!cloudflareAccess.ok) {
+      sendJson(response, 403, { error: cloudflareAccess.error });
+      return;
+    }
+    request.cloudflareAccess = cloudflareAccess.identity;
+
     if (request.method === "POST" && request.url === "/api/login") {
       await handleLogin(request, response);
       return;
@@ -338,6 +359,94 @@ function escapeHtml(value) {
 function isPublicRequest(request) {
   const url = new URL(request.url, `http://${request.headers.host}`);
   return (request.method === "GET" || request.method === "HEAD") && publicPaths.has(url.pathname);
+}
+
+async function verifyCloudflareAccessRequest(request) {
+  if (!cloudflareAccessRequired) return { ok: true, identity: null };
+
+  const token = String(request.headers["cf-access-jwt-assertion"] || "");
+  if (!token) return { ok: false, error: "需要先通过 Cloudflare Access 验证" };
+
+  try {
+    const payload = await verifyCloudflareAccessJwt(token);
+    return {
+      ok: true,
+      identity: {
+        email: payload.email || String(request.headers["cf-access-authenticated-user-email"] || ""),
+        sub: payload.sub || "",
+      },
+    };
+  } catch (error) {
+    return { ok: false, error: "Cloudflare Access 验证无效" };
+  }
+}
+
+async function verifyCloudflareAccessJwt(token) {
+  const [encodedHeader, encodedPayload, encodedSignature] = token.split(".");
+  if (!encodedHeader || !encodedPayload || !encodedSignature) throw new Error("JWT 格式不正确");
+
+  const header = parseBase64UrlJson(encodedHeader);
+  const payload = parseBase64UrlJson(encodedPayload);
+  if (header.alg !== "RS256" || !header.kid) throw new Error("JWT 算法不支持");
+
+  validateCloudflareAccessPayload(payload);
+
+  const key = await cloudflareAccessPublicKey(header.kid);
+  const verifier = createVerify("RSA-SHA256");
+  verifier.update(`${encodedHeader}.${encodedPayload}`);
+  verifier.end();
+  if (!verifier.verify(key, Buffer.from(encodedSignature, "base64url"))) throw new Error("JWT 签名不正确");
+
+  return payload;
+}
+
+function parseBase64UrlJson(value) {
+  return JSON.parse(Buffer.from(value, "base64url").toString("utf8"));
+}
+
+function validateCloudflareAccessPayload(payload) {
+  const now = Math.floor(Date.now() / 1000);
+  const leeway = 60;
+  const audiences = Array.isArray(payload.aud) ? payload.aud : [payload.aud].filter(Boolean);
+  if (payload.iss !== cloudflareAccessIssuer) throw new Error("JWT 签发方不匹配");
+  if (!audiences.some((audience) => cloudflareAccessAudiences.includes(audience))) throw new Error("JWT 受众不匹配");
+  if (Number(payload.exp || 0) <= now - leeway) throw new Error("JWT 已过期");
+  if (payload.nbf && Number(payload.nbf) > now + leeway) throw new Error("JWT 尚未生效");
+  if (payload.iat && Number(payload.iat) > now + leeway) throw new Error("JWT 签发时间异常");
+}
+
+async function cloudflareAccessPublicKey(kid) {
+  const keys = await cloudflareAccessPublicKeys();
+  const jwk = keys.get(kid);
+  if (!jwk) {
+    cloudflareAccessKeyCache = { keys: new Map(), expiresAt: 0 };
+    const refreshedKeys = await cloudflareAccessPublicKeys();
+    const refreshedJwk = refreshedKeys.get(kid);
+    if (!refreshedJwk) throw new Error("找不到 Cloudflare Access 公钥");
+    return createPublicKey({ key: refreshedJwk, format: "jwk" });
+  }
+  return createPublicKey({ key: jwk, format: "jwk" });
+}
+
+async function cloudflareAccessPublicKeys() {
+  if (cloudflareAccessKeyCache.expiresAt > Date.now() && cloudflareAccessKeyCache.keys.size) return cloudflareAccessKeyCache.keys;
+
+  const response = await fetch(`${cloudflareAccessIssuer}/cdn-cgi/access/certs`, {
+    headers: { Accept: "application/json" },
+  });
+  if (!response.ok) throw new Error("Cloudflare Access 公钥读取失败");
+
+  const jwks = await response.json();
+  const keys = new Map((jwks.keys || []).filter((key) => key.kid).map((key) => [key.kid, key]));
+  if (!keys.size) throw new Error("Cloudflare Access 公钥为空");
+  cloudflareAccessKeyCache = { keys, expiresAt: Date.now() + 6 * 60 * 60 * 1000 };
+  return keys;
+}
+
+function normalizeCloudflareAccessIssuer(value) {
+  const issuer = String(value || "").trim().replace(/\/+$/g, "");
+  if (!issuer) return "";
+  return issuer.startsWith("http://") || issuer.startsWith("https://") ? issuer : `https://${issuer}`;
 }
 
 function currentSession(request) {
