@@ -11,18 +11,50 @@ const dataFile = join(root, "data.js");
 const placeholderFile = join(root, "assets/family/placeholder.bmp");
 const archiveRoot = join(root, "assets/archive");
 const port = Number(process.env.PORT || 8001);
-const sitePassword = process.env.SITE_PASSWORD || "150921";
-const sessionToken = randomUUID();
+const host = process.env.HOST || "127.0.0.1";
+const adminPassword = process.env.ADMIN_PASSWORD || process.env.SITE_PASSWORD;
+const viewerPassword = process.env.VIEWER_PASSWORD;
+const minPasswordLength = Number(process.env.MIN_PASSWORD_LENGTH || 12);
+const sessionMaxAgeSeconds = Number(process.env.SESSION_MAX_AGE_SECONDS || 60 * 60 * 24 * 30);
+const cookieSecure = process.env.COOKIE_SECURE !== "false";
+const trustProxy = process.env.TRUST_PROXY === "true";
+const maxLoginAttempts = Number(process.env.LOGIN_MAX_ATTEMPTS || 5);
+const loginWindowMs = Number(process.env.LOGIN_WINDOW_MS || 15 * 60 * 1000);
+const loginBlockMs = Number(process.env.LOGIN_BLOCK_MS || 15 * 60 * 1000);
+const ROLE_ADMIN = "admin";
+const ROLE_VIEWER = "viewer";
+const sessions = new Map();
+const loginAttempts = new Map();
 const travelPhotoCount = 10;
 const publicPaths = new Set([
   "/",
   "/index.html",
   "/styles.css",
   "/script.js",
+  "/robots.txt",
   "/assets/family/favicon.png",
   "/assets/family/favicon.svg",
   "/assets/family/hero-family.jpg",
+  "/assets/maps/world-map.png",
+  "/assets/maps/china-map.png",
 ]);
+const cacheablePublicPaths = new Set([
+  "/assets/family/favicon.png",
+  "/assets/family/favicon.svg",
+  "/assets/family/hero-family.jpg",
+  "/assets/maps/world-map.png",
+  "/assets/maps/china-map.png",
+]);
+
+if (!adminPassword || !viewerPassword || adminPassword.length < minPasswordLength || viewerPassword.length < minPasswordLength) {
+  console.error(`请先设置 ADMIN_PASSWORD 和 VIEWER_PASSWORD 环境变量，长度都至少 ${minPasswordLength} 个字符。`);
+  process.exit(1);
+}
+
+if (adminPassword === viewerPassword) {
+  console.error("ADMIN_PASSWORD 和 VIEWER_PASSWORD 不能相同。");
+  process.exit(1);
+}
 
 const mimeTypes = {
   ".html": "text/html; charset=utf-8",
@@ -45,39 +77,56 @@ createServer(async (request, response) => {
       await handleLogin(request, response);
       return;
     }
-    if (!isPublicRequest(request) && !isAuthenticated(request)) {
+    const session = currentSession(request);
+    if (!isPublicRequest(request) && !session) {
       sendJson(response, 401, { error: "需要密码" });
       return;
     }
     if (request.method === "POST" && request.url === "/api/create") {
-      await handleCreate(request, response);
+      await handleCreate(request, response, session);
       return;
     }
-    await serveStatic(request, response);
+    await serveStatic(request, response, session);
   } catch (error) {
     sendJson(response, 500, { error: error.message });
   }
-}).listen(port, "127.0.0.1", () => {
-  console.log(`Family site running at http://127.0.0.1:${port}/`);
+}).listen(port, host, () => {
+  console.log(`Family site running at http://${host}:${port}/`);
 });
 
 async function handleLogin(request, response) {
+  const blockedMs = remainingLoginBlockMs(request);
+  if (blockedMs > 0) {
+    sendJson(response, 429, { error: `尝试次数过多，请 ${Math.ceil(blockedMs / 60000)} 分钟后再试。` });
+    return;
+  }
+
   const body = await readBody(request);
   const { password } = JSON.parse(body || "{}");
-  if (!passwordMatches(password)) {
+  const role = matchingRole(password);
+  if (!role) {
+    recordFailedLogin(request);
     sendJson(response, 401, { error: "密码不正确" });
     return;
   }
 
+  clearFailedLogins(request);
   const data = await readData();
+  const token = createSession(role);
   response.writeHead(200, {
+    ...securityHeaders(),
     "Content-Type": "application/json; charset=utf-8",
-    "Set-Cookie": `family_site_session=${sessionToken}; HttpOnly; SameSite=Lax; Path=/; Max-Age=2592000`,
+    "Set-Cookie": sessionCookie(token),
   });
-  response.end(JSON.stringify({ ok: true, data }));
+  response.end(JSON.stringify({ ok: true, role, data: visibleDataForRole(data, role) }));
 }
 
-async function handleCreate(request, response) {
+async function handleCreate(request, response, session) {
+  if (!isAdminSession(session)) {
+    sendJson(response, 403, { error: "访客模式不能创建或修改内容" });
+    return;
+  }
+
   const body = await readBody(request);
   const { kind, payload } = JSON.parse(body || "{}");
   const data = await readData();
@@ -90,7 +139,7 @@ async function handleCreate(request, response) {
   else throw new Error("未知创建类型");
 
   await writeData(data);
-  sendJson(response, 200, { data, created });
+  sendJson(response, 200, { data: visibleDataForRole(data, ROLE_ADMIN), created });
 }
 
 async function createTimeline(data, payload) {
@@ -225,18 +274,40 @@ async function writeData(data) {
   await writeFile(dataFile, `window.familyData = ${JSON.stringify(data, null, 2)};\n`, "utf8");
 }
 
-async function serveStatic(request, response) {
+async function serveStatic(request, response, session) {
   const url = new URL(request.url, `http://${request.headers.host}`);
   const pathname = decodeURIComponent(url.pathname === "/" ? "/index.html" : url.pathname);
+  if (pathname === "/data.js") {
+    await serveDataJs(response, session);
+    return;
+  }
+
   const filePath = safePath(pathname.slice(1));
+  if (isArchivePath(filePath) && !isAdminSession(session)) {
+    sendJson(response, 403, { error: "访客模式不能访问家庭资料库" });
+    return;
+  }
+
   const fileStat = await stat(filePath);
   if (fileStat.isDirectory() && isArchivePath(filePath)) {
     await serveArchiveDirectory(filePath, pathname, response);
     return;
   }
   if (!fileStat.isFile()) throw new Error("不是文件");
-  response.writeHead(200, { "Content-Type": mimeTypes[extname(filePath).toLowerCase()] || "application/octet-stream" });
+  response.writeHead(200, {
+    ...staticFileHeaders(pathname),
+    "Content-Type": mimeTypes[extname(filePath).toLowerCase()] || "application/octet-stream",
+  });
   createReadStream(filePath).pipe(response);
+}
+
+async function serveDataJs(response, session) {
+  const data = visibleDataForRole(await readData(), session?.role);
+  response.writeHead(200, {
+    ...securityHeaders(),
+    "Content-Type": "text/javascript; charset=utf-8",
+  });
+  response.end(`window.familyData = ${JSON.stringify(data, null, 2)};\n`);
 }
 
 async function serveArchiveDirectory(folder, pathname, response) {
@@ -246,7 +317,7 @@ async function serveArchiveDirectory(folder, pathname, response) {
     .sort((a, b) => a.localeCompare(b, "zh-CN", { numeric: true }));
   const basePath = pathname.endsWith("/") ? pathname : `${pathname}/`;
   const links = files.map((file) => `<li><a href="${basePath}${encodeURIComponent(file)}">${escapeHtml(file)}</a></li>`).join("");
-  response.writeHead(200, { "Content-Type": "text/html; charset=utf-8" });
+  response.writeHead(200, { ...securityHeaders(), "Content-Type": "text/html; charset=utf-8" });
   response.end(`<!doctype html><meta charset="utf-8"><title>PDF List</title><ul>${links}</ul>`);
 }
 
@@ -269,20 +340,130 @@ function isPublicRequest(request) {
   return (request.method === "GET" || request.method === "HEAD") && publicPaths.has(url.pathname);
 }
 
-function isAuthenticated(request) {
+function currentSession(request) {
   const cookies = Object.fromEntries(
     String(request.headers.cookie || "")
       .split(";")
       .map((cookie) => cookie.trim().split("="))
       .filter(([key, value]) => key && value),
   );
-  return cookies.family_site_session === sessionToken;
+  const token = cookies.family_site_session;
+  const session = sessions.get(token);
+  if (!session) return null;
+  if (session.expiresAt <= Date.now()) {
+    sessions.delete(token);
+    return null;
+  }
+  return session;
 }
 
-function passwordMatches(password) {
+function isAdminSession(session) {
+  return session?.role === ROLE_ADMIN;
+}
+
+function matchingRole(password) {
+  if (passwordMatches(password, adminPassword)) return ROLE_ADMIN;
+  if (passwordMatches(password, viewerPassword)) return ROLE_VIEWER;
+  return null;
+}
+
+function passwordMatches(password, expectedPassword) {
   const actual = Buffer.from(String(password || ""));
-  const expected = Buffer.from(sitePassword);
+  const expected = Buffer.from(expectedPassword);
   return actual.length === expected.length && timingSafeEqual(actual, expected);
+}
+
+function createSession(role) {
+  pruneExpiredSessions();
+  const token = randomUUID();
+  sessions.set(token, { role, expiresAt: Date.now() + sessionMaxAgeSeconds * 1000 });
+  return token;
+}
+
+function sessionCookie(token) {
+  return [
+    `family_site_session=${token}`,
+    "HttpOnly",
+    "SameSite=Lax",
+    "Path=/",
+    `Max-Age=${sessionMaxAgeSeconds}`,
+    cookieSecure ? "Secure" : "",
+  ]
+    .filter(Boolean)
+    .join("; ");
+}
+
+function pruneExpiredSessions() {
+  const now = Date.now();
+  for (const [token, session] of sessions) {
+    if (session.expiresAt <= now) sessions.delete(token);
+  }
+}
+
+function visibleDataForRole(data, role) {
+  const visibleData = JSON.parse(JSON.stringify(data));
+  visibleData.access = accessForRole(role);
+  if (role !== ROLE_ADMIN) {
+    visibleData.calendarEvents = [];
+    if (visibleData.family) delete visibleData.family.currentCalendar;
+  }
+  return visibleData;
+}
+
+function accessForRole(role) {
+  const isAdmin = role === ROLE_ADMIN;
+  return {
+    role: isAdmin ? ROLE_ADMIN : ROLE_VIEWER,
+    canCreate: isAdmin,
+    canViewCalendar: isAdmin,
+    canViewArchive: isAdmin,
+  };
+}
+
+function remainingLoginBlockMs(request) {
+  const attempt = loginAttempts.get(clientKey(request));
+  if (!attempt) return 0;
+  if (attempt.blockedUntil > Date.now()) return attempt.blockedUntil - Date.now();
+  return 0;
+}
+
+function recordFailedLogin(request) {
+  const key = clientKey(request);
+  const now = Date.now();
+  const attempt = loginAttempts.get(key);
+  const nextAttempt = !attempt || now - attempt.firstAt > loginWindowMs ? { count: 0, firstAt: now, blockedUntil: 0 } : attempt;
+  nextAttempt.count += 1;
+  if (nextAttempt.count >= maxLoginAttempts) nextAttempt.blockedUntil = now + loginBlockMs;
+  loginAttempts.set(key, nextAttempt);
+}
+
+function clearFailedLogins(request) {
+  loginAttempts.delete(clientKey(request));
+}
+
+function clientKey(request) {
+  if (trustProxy) {
+    const forwardedFor = String(request.headers["x-forwarded-for"] || "").split(",")[0].trim();
+    if (forwardedFor) return forwardedFor;
+  }
+  return request.socket.remoteAddress || "unknown";
+}
+
+function securityHeaders(extraHeaders = {}) {
+  return {
+    "Cache-Control": "private, no-store",
+    "X-Robots-Tag": "noindex, nofollow, noarchive",
+    "X-Content-Type-Options": "nosniff",
+    "Referrer-Policy": "no-referrer",
+    ...extraHeaders,
+  };
+}
+
+function staticFileHeaders(pathname) {
+  if (cacheablePublicPaths.has(pathname)) {
+    return securityHeaders({ "Cache-Control": "public, max-age=604800, immutable" });
+  }
+  return securityHeaders();
 }
 
 function readBody(request) {
@@ -298,7 +479,7 @@ function readBody(request) {
 }
 
 function sendJson(response, statusCode, payload) {
-  response.writeHead(statusCode, { "Content-Type": "application/json; charset=utf-8" });
+  response.writeHead(statusCode, { ...securityHeaders(), "Content-Type": "application/json; charset=utf-8" });
   response.end(JSON.stringify(payload));
 }
 

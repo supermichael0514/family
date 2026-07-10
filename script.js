@@ -1,5 +1,5 @@
 const AUTH_STORAGE_KEY = "family-site-authenticated";
-const CLIENT_SITE_PASSWORD = "150921";
+const VIEWER_ALLOWED_VIEWS = new Set(["home", "timeline", "album", "map"]);
 let data = window.familyData || null;
 
 let gallery = [];
@@ -73,6 +73,9 @@ function photoButton(item, caption, featured = false) {
 }
 
 function renderCreateActions() {
+  document.querySelectorAll(".create-button").forEach((button) => button.remove());
+  if (!canCreate()) return;
+
   const actions = [
     ["timeline", "创建时间线事件"],
     ["album", "创建月度相册"],
@@ -101,8 +104,14 @@ function renderLatestMonth() {
 }
 
 function renderReminders() {
+  const reminders = document.querySelector("[data-reminders]");
+  if (!canViewCalendar()) {
+    if (reminders) reminders.innerHTML = "";
+    return;
+  }
+
   const today = todayISO();
-  document.querySelector("[data-reminders]").innerHTML = data.calendarEvents
+  reminders.innerHTML = data.calendarEvents
     .filter((item) => item.date >= today)
     .sort((a, b) => a.date.localeCompare(b.date) || sortCalendarEvents(a, b))
     .slice(0, 5)
@@ -380,6 +389,8 @@ function renderArchive() {
 }
 
 function openArchiveItem(cardId, tabId) {
+  if (!canViewArchive()) return;
+
   const card = archiveCards.find((item) => item.id === cardId);
   const tab = card?.tabs.find((item) => item.id === tabId);
   if (!card || !tab) return;
@@ -387,6 +398,8 @@ function openArchiveItem(cardId, tabId) {
 }
 
 async function openArchivePdfBrowser(tab) {
+  if (!canViewArchive()) return;
+
   const modal = document.querySelector(".event-modal");
   const content = modal.querySelector("[data-event-modal-content]");
   modal.querySelector(".event-modal-panel").classList.add("archive-pdf-panel");
@@ -497,6 +510,8 @@ function selectArchivePdf(index) {
 }
 
 function openCreateModal(kind) {
+  if (!canCreate()) return;
+
   const modal = document.querySelector(".event-modal");
   modal.querySelector(".event-modal-panel").classList.remove("archive-pdf-panel");
   const content = modal.querySelector("[data-event-modal-content]");
@@ -642,6 +657,8 @@ function positionPicker(type, title, hint) {
 }
 
 async function submitCreateForm(form) {
+  if (!canCreate()) return;
+
   const status = form.querySelector("[data-form-status]");
   const kind = form.dataset.createForm;
   const payload = Object.fromEntries(new FormData(form).entries());
@@ -674,6 +691,8 @@ async function submitCreateForm(form) {
 }
 
 function openDayModal(date) {
+  if (!canViewCalendar()) return;
+
   const modal = document.querySelector(".event-modal");
   modal.querySelector(".event-modal-panel").classList.remove("archive-pdf-panel");
   const content = modal.querySelector("[data-event-modal-content]");
@@ -717,8 +736,45 @@ function closeOverlays() {
   closeCreateModal();
 }
 
+function access() {
+  return data?.access || { role: "viewer", canCreate: false, canViewCalendar: false, canViewArchive: false };
+}
+
+function canCreate() {
+  return access().canCreate === true;
+}
+
+function canViewCalendar() {
+  return access().canViewCalendar === true;
+}
+
+function canViewArchive() {
+  return access().canViewArchive === true;
+}
+
+function canView(id) {
+  if (id === "calendar") return canViewCalendar();
+  if (id === "archive") return canViewArchive();
+  return VIEWER_ALLOWED_VIEWS.has(id);
+}
+
+function applyAccessControls() {
+  const currentAccess = access();
+  document.body.dataset.accessRole = currentAccess.role;
+  document.querySelector(".home-grid")?.toggleAttribute("hidden", currentAccess.role !== "admin");
+  document.querySelector(".reminders")?.toggleAttribute("hidden", !canViewCalendar());
+  document.querySelectorAll(".top-nav a").forEach((link) => {
+    const id = link.getAttribute("href")?.replace("#", "");
+    link.toggleAttribute("hidden", !canView(id));
+  });
+}
+
 function showView() {
-  const id = window.location.hash.slice(1) || "home";
+  let id = window.location.hash.slice(1) || "home";
+  if (!canView(id)) {
+    id = "home";
+    history.replaceState(null, "", "#home");
+  }
   document.querySelectorAll(".view").forEach((view) => view.classList.toggle("active", view.id === id));
   document.querySelectorAll(".top-nav a").forEach((link) => link.classList.toggle("active", link.getAttribute("href") === `#${id}`));
   window.scrollTo({ top: 0, behavior: "instant" });
@@ -751,14 +807,17 @@ function moveLightbox(direction) {
 function renderAll() {
   if (!data) return;
   gallery = [];
+  applyAccessControls();
   renderCreateActions();
   renderLatestMonth();
   renderReminders();
   renderTimeline();
   renderAlbums();
   renderMap();
-  renderCalendar();
-  renderArchive();
+  if (canViewCalendar()) renderCalendar();
+  else document.querySelector("[data-calendar-shell]").innerHTML = "";
+  if (canViewArchive()) renderArchive();
+  else document.querySelector("[data-archive]").innerHTML = "";
   showView();
 }
 
@@ -1062,20 +1121,7 @@ async function loadFamilyData() {
   if (data) return data;
 
   if (location.protocol === "file:") {
-    return new Promise((resolveData, rejectData) => {
-      const script = document.createElement("script");
-      script.src = "data.js";
-      script.onload = () => {
-        if (!window.familyData) {
-          rejectData(new Error("家庭数据没有加载成功"));
-          return;
-        }
-        setFamilyData(window.familyData);
-        resolveData(data);
-      };
-      script.onerror = () => rejectData(new Error("家庭数据没有加载成功"));
-      document.head.append(script);
-    });
+    throw new Error("请通过服务器地址访问家庭资料库，不能直接打开 HTML 文件。");
   }
 
   const source = `data.js?v=${Date.now()}`;
@@ -1132,17 +1178,7 @@ async function submitAuthForm(form) {
   error.textContent = "";
 
   if (location.protocol === "file:") {
-    if (password === CLIENT_SITE_PASSWORD) {
-      try {
-        await loadFamilyData();
-        unlockSite();
-        return;
-      } catch (loadError) {
-        error.textContent = "数据加载失败，请确认 data.js 文件还在同一文件夹。";
-        return;
-      }
-    }
-    error.textContent = "密码不正确，请再试一次。";
+    error.textContent = "请通过服务器地址访问家庭资料库，不能直接打开 HTML 文件。";
     return;
   }
 

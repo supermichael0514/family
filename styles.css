@@ -67,6 +67,10 @@ button {
   font: inherit;
 }
 
+[hidden] {
+  display: none !important;
+}
+
 .auth-screen {
   position: fixed;
   inset: 0;
