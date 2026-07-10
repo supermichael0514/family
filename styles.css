@@ -1837,8 +1837,11 @@ h3 {
   }
 
   .top-nav {
-    flex-wrap: wrap;
-    overflow: visible;
+    flex-wrap: nowrap;
+    overflow-x: auto;
+    overflow-y: hidden;
+    white-space: nowrap;
+    -webkit-overflow-scrolling: touch;
   }
 
   .top-nav a {
