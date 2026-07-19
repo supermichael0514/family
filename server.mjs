@@ -44,6 +44,7 @@ const publicPaths = new Set([
   "/assets/family/favicon.png",
   "/assets/family/favicon.svg",
   "/assets/family/hero-family.jpg",
+  "/assets/family/hero-family.jpeg",
   "/assets/maps/world-map.png",
   "/assets/maps/china-map.png",
 ]);
@@ -51,9 +52,12 @@ const cacheablePublicPaths = new Set([
   "/assets/family/favicon.png",
   "/assets/family/favicon.svg",
   "/assets/family/hero-family.jpg",
+  "/assets/family/hero-family.jpeg",
   "/assets/maps/world-map.png",
   "/assets/maps/china-map.png",
 ]);
+const cacheableAssetFolders = ["/assets/monthly/", "/assets/timeline/", "/assets/travel/", "/assets/family/", "/assets/maps/"];
+const cacheableAssetExtensions = new Set([".bmp", ".gif", ".jpg", ".jpeg", ".png", ".webp"]);
 
 if (!adminPassword || !viewerPassword || adminPassword.length < minPasswordLength || viewerPassword.length < minPasswordLength) {
   console.error(`请先设置 ADMIN_PASSWORD 和 VIEWER_PASSWORD 环境变量，长度都至少 ${minPasswordLength} 个字符。`);
@@ -571,6 +575,9 @@ function securityHeaders(extraHeaders = {}) {
 function staticFileHeaders(pathname) {
   if (cacheablePublicPaths.has(pathname)) {
     return securityHeaders({ "Cache-Control": "public, max-age=604800, immutable" });
+  }
+  if (cacheableAssetFolders.some((folder) => pathname.startsWith(folder)) && cacheableAssetExtensions.has(extname(pathname).toLowerCase())) {
+    return securityHeaders({ "Cache-Control": "private, max-age=604800" });
   }
   return securityHeaders();
 }

@@ -67,7 +67,7 @@ function photoButton(item, caption, featured = false) {
   const index = addGalleryItem(item, caption);
   return `
     <button class="photo-button ${featured ? "featured" : ""}" type="button" data-photo-index="${index}" aria-label="查看${caption}">
-      <img src="${item.src}" alt="${caption}" />
+      <img src="${item.src}" alt="${caption}" loading="lazy" decoding="async" />
     </button>
   `;
 }
@@ -1096,7 +1096,7 @@ function chinaMapSvg() {
 
 function mapImage(type) {
   const src = type === "china" ? "assets/maps/china-map.png" : "assets/maps/world-map.png";
-  return `<img class="world-map ${type === "china" ? "china-map" : ""}" src="${src}" alt="${type === "china" ? "中国地图占位图" : "世界地图占位图"}" draggable="false" />`;
+  return `<img class="world-map ${type === "china" ? "china-map" : ""}" src="${src}" alt="${type === "china" ? "中国地图占位图" : "世界地图占位图"}" draggable="false" loading="lazy" decoding="async" />`;
 }
 
 function escapeAttr(value) {
